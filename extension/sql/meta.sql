@@ -22,6 +22,7 @@ BEGIN
         JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
         WHERE classid = 'pg_class'::regclass
     LOOP
+       RAISE NOTICE 'Dropping job for table % in schema %', dropped_table_name, dropped_table_schema;
         DELETE FROM vectorize.job 
         WHERE LOWER(params ->> 'table') = LOWER(dropped_table_name)
           AND LOWER(params ->> 'schema') = LOWER(dropped_table_schema);
