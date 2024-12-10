@@ -14,16 +14,16 @@ ON vectorize.job ((params ->> 'table'), (params ->> 'schema'));
 CREATE OR REPLACE FUNCTION after_drop_trigger()
 RETURNS event_trigger AS $$
 DECLARE
-    dropped_table RECORD;
+    dropped_object RECORD;
     schema_name TEXT;
     table_name TEXT;
 BEGIN
     -- Using pg_event_trigger_dropped_objects() to fetch details of dropped objects.
     -- This function provides metadata for objects affected by the DROP event.
-    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
-        IF obj.object_type = 'table' THEN
-            schema_name := split_part(obj.object_identity, '.', 1);
-            table_name := split_part(obj.object_identity, '.', 2);
+    FOR dropped_object IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
+        IF dropped_object.object_type = 'table' THEN
+            schema_name := split_part(dropped_object.object_identity, '.', 1);
+            table_name := split_part(dropped_object.object_identity, '.', 2);
             RAISE NOTICE 'Processing drop for table: %, schema: %', table_name, schema_name;
 
         -- Delete jobs associated with the dropped table
