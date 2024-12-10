@@ -7,6 +7,9 @@ CREATE TABLE vectorize.job (
     last_completion TIMESTAMP WITH TIME ZONE
 );
 
+CREATE INDEX IF NOT EXISTS idx_job_params_table_schema
+ON vectorize.job ((params ->> 'table'), (params ->> 'schema'));
+
 -- create an event trigger function to delete jobs when corresponding tables are dropped
 CREATE OR REPLACE FUNCTION after_drop_trigger()
 RETURNS event_trigger AS $$
