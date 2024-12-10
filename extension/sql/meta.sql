@@ -12,22 +12,24 @@ CREATE OR REPLACE FUNCTION after_drop_trigger()
 RETURNS event_trigger AS $$
 DECLARE
     dropped_table RECORD;
+    schema_name TEXT;
+    table_name TEXT;
 BEGIN
-    -- Get the name and schema of the table being dropped
-    FOR dropped_table IN
-        SELECT
-            c.relname AS table_name,    -- Extract table name
-            n.nspname AS schema_name    -- Extract schema name
-        FROM pg_event_trigger_dropped_objects() o
-        JOIN pg_class c ON o.objid = c.oid
-        JOIN pg_namespace n ON c.relnamespace = n.oid
-        WHERE o.object_type = 'table'
-    LOOP
+    -- Using pg_event_trigger_dropped_objects() to fetch details of dropped objects.
+    -- This function provides metadata for objects affected by the DROP event.
+    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
+        IF obj.object_type = 'table' THEN
+            schema_name := split_part(obj.object_identity, '.', 1);
+            table_name := split_part(obj.object_identity, '.', 2);
+            RAISE NOTICE 'Processing drop for table: %, schema: %', table_name, schema_name;
+
         -- Delete jobs associated with the dropped table
-        DELETE FROM vectorize.job 
-        WHERE params ? 'table' AND params ? 'schema'
-          AND params ->> 'table' = dropped_table.table_name
-          AND params ->> 'schema' = dropped_table.schema_name;
+            DELETE FROM vectorize.job
+            WHERE params ? 'table' AND params ? 'schema'
+              AND params ->> 'table' = table_name
+              AND params ->> 'schema' = schema_name;
+            RAISE NOTICE 'Job deletion executed for table: %, schema: %', table_name, schema_name;
+        END IF;
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
