@@ -11,18 +11,19 @@ CREATE TABLE vectorize.job (
 CREATE OR REPLACE FUNCTION after_drop_trigger()
 RETURNS event_trigger AS $$
 DECLARE
-    dropped_table_name RECORD;
+    dropped_table RECORD;
 BEGIN
     -- Get the name and schema of the table being dropped
     FOR dropped_table IN
         SELECT
-            c.relname AS table_name,
-            n.nspname AS schema_name
+            c.relname AS table_name,    -- Extract table name
+            n.nspname AS schema_name    -- Extract schema name
         FROM pg_event_trigger_dropped_objects() o
         JOIN pg_class c ON o.objid = c.oid
         JOIN pg_namespace n ON c.relnamespace = n.oid
         WHERE o.object_type = 'table'
     LOOP
+        -- Delete jobs associated with the dropped table
         DELETE FROM vectorize.job 
         WHERE params ? 'table' AND params ? 'schema'
           AND params ->> 'table' = dropped_table.table_name
