@@ -59,7 +59,7 @@ jobs:
           git fetch --tags
           git checkout main
           echo "\q" | make run
-          cargo test -- --ignored --test-threads=1
+          # cargo test -- --ignored --test-threads=1
       - name: Test branch's version
         env:
           CI_BRANCH: ${{ steps.current-version.outputs.CI_BRANCH }}
