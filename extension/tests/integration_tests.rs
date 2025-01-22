@@ -54,6 +54,74 @@ async fn test_scheduled_job() {
 
 #[ignore]
 #[tokio::test]
+async fn test_chunk_text() {
+    let conn = common::init_database().await;
+
+    let query = r#"
+        SELECT vectorize.chunk_text('This is a test for chunking.', 20)::TEXT[];
+    "#;
+    let result: Vec<String> = sqlx::query_scalar(query)
+        .fetch_one(&conn)
+        .await
+        .expect("failed to execute query");
+    assert_eq!(
+        result,
+        vec!["This is a test for".to_string(), "chunking.".to_string(),]
+    );
+
+    let query = r#"
+        SELECT vectorize.chunk_text('', 20)::TEXT[];
+    "#;
+    let result: Vec<String> = sqlx::query_scalar(query)
+        .fetch_one(&conn)
+        .await
+        .expect("failed to execute query");
+    assert_eq!(result, Vec::<String>::new());
+
+    let query = r#"
+        SELECT vectorize.chunk_text('Short', 20)::TEXT[];
+    "#;
+    let result: Vec<String> = sqlx::query_scalar(query)
+        .fetch_one(&conn)
+        .await
+        .expect("failed to execute query");
+    assert_eq!(result, vec!["Short".to_string()]);
+
+    let query = r#"
+        SELECT vectorize.chunk_text(
+            'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+            50
+        )::TEXT[];
+    "#;
+    let result: Vec<String> = sqlx::query_scalar(query)
+        .fetch_one(&conn)
+        .await
+        .expect("failed to execute query");
+    assert_eq!(
+        result,
+        vec![
+            "Lorem ipsum dolor sit amet, consectetur adipiscing".to_string(),
+            "elit.".to_string(),
+            "Sed do eiusmod tempor incididunt ut labore et".to_string(),
+            "dolore magna aliqua.".to_string(),
+        ]
+    );
+
+    let query = r#"
+        SELECT vectorize.chunk_text('This is a simple text that exceeds the limit.', 100)::TEXT[];
+    "#;
+    let result: Vec<String> = sqlx::query_scalar(query)
+        .fetch_one(&conn)
+        .await
+        .expect("failed to execute query");
+    assert_eq!(
+        result,
+        vec!["This is a simple text that exceeds the limit.".to_string()]
+    );
+}
+
+#[ignore]
+#[tokio::test]
 async fn test_scheduled_single_table() {
     let conn = common::init_database().await;
     let mut rng = rand::thread_rng();
@@ -859,4 +927,145 @@ async fn test_cohere() {
             .await
             .unwrap();
     assert_eq!(search_results.len(), 3);
+}
+
+#[ignore]
+#[tokio::test]
+async fn test_event_trigger_on_table_drop() {
+    let conn = common::init_database().await;
+    let mut rng = rand::thread_rng();
+    let test_num = rng.gen_range(1..100000);
+    let test_table_name = format!("products_test_{}", test_num);
+    let job_name = format!("job_{}", test_num);
+
+    // Initialize the test table and job
+    common::init_test_table(&test_table_name, &conn).await;
+    common::init_embedding_svc_url(&conn).await;
+
+    let _ = sqlx::query(&format!(
+        "SELECT vectorize.table(
+        job_name => '{job_name}',
+        \"table\" => '{test_table_name}',
+        primary_key => 'product_id',
+        columns => ARRAY['product_name'],
+        transformer => 'sentence-transformers/all-MiniLM-L6-v2'
+    );"
+    ))
+    .execute(&conn)
+    .await
+    .expect("failed to initialize vectorize job");
+
+    // Check the job table before dropping the test table
+    let job_count_before = common::row_count("vectorize.job", &conn).await;
+    assert_eq!(job_count_before, 1);
+
+    // Drop the test table
+    let drop_result = sqlx::query(&format!("DROP TABLE {test_table_name} CASCADE;"))
+        .execute(&conn)
+        .await;
+    assert!(drop_result.is_ok(), "Failed to drop the test table");
+
+    // Debug: Check job table after dropping the test table
+    let job_count_after = common::row_count("vectorize.job", &conn).await;
+    assert_eq!(
+        job_count_after, 0,
+        "Job entry was not removed after table drop"
+    );
+
+    // Check if the job was deleted
+    let deleted_job = sqlx::query(
+        "SELECT * FROM vectorize.job WHERE params->>'table' = $1 AND params->>'schema' = $2",
+    )
+    .bind(test_table_name)
+    .bind("public")
+    .fetch_optional(&conn)
+    .await
+    .expect("Failed to fetch job");
+
+    assert!(
+        deleted_job.is_none(),
+        "Job was not deleted after table drop"
+    );
+
+    // Attempt to drop a non-associated table and verify no action is taken
+    let unrelated_table_name = format!("unrelated_test_{}", test_num);
+    common::init_test_table(&unrelated_table_name, &conn).await;
+    let _ = sqlx::query(&format!("DROP TABLE {unrelated_table_name};"))
+        .execute(&conn)
+        .await
+        .expect("Failed to drop the unrelated test table");
+
+    // Ensure vectorize.job is unaffected
+    let final_job_count = common::row_count("vectorize.job", &conn).await;
+    assert_eq!(
+        final_job_count, 0,
+        "vectorize.job should remain unaffected by unrelated table drops"
+    );
+}
+
+#[ignore]
+#[tokio::test]
+async fn test_chunk_table() {
+    let conn = common::init_database().await;
+    let test_table_name = "chunk_test_table";
+    let output_table_name = "chunked_data";
+
+    // Drop the test table if it exists
+    let drop_table_query = format!("DROP TABLE IF EXISTS {}", test_table_name);
+    sqlx::query(&drop_table_query)
+        .execute(&conn)
+        .await
+        .expect("failed to drop test table");
+
+    // Drop the output table if it exists
+    let drop_output_table_query = format!("DROP TABLE IF EXISTS {}", output_table_name);
+    sqlx::query(&drop_output_table_query)
+        .execute(&conn)
+        .await
+        .expect("failed to drop output table");
+
+    // Create a test table and insert data
+    let create_table_query = format!(
+        "CREATE TABLE {} (id SERIAL PRIMARY KEY, text_column TEXT)",
+        test_table_name
+    );
+    sqlx::query(&create_table_query)
+        .execute(&conn)
+        .await
+        .expect("failed to create test table");
+
+    let insert_data_query = format!(
+        "INSERT INTO {} (text_column) VALUES ('This is a test string that will be chunked into smaller pieces.')",
+        test_table_name
+    );
+    sqlx::query(&insert_data_query)
+        .execute(&conn)
+        .await
+        .expect("failed to insert data into test table");
+
+    // Call the chunk_table function with the primary key parameter
+    let chunk_table_query = format!(
+        "SELECT vectorize.chunk_table('{}', 'text_column', 'id', 10, '{}')",
+        test_table_name, output_table_name
+    );
+    sqlx::query(&chunk_table_query)
+        .execute(&conn)
+        .await
+        .expect("failed to chunk table");
+
+    // Verify the chunked data
+    let select_query = format!("SELECT original_id, chunk_index, chunk FROM {}", output_table_name);
+    let rows: Vec<(i32, i32, String)> = sqlx::query_as(&select_query)
+        .fetch_all(&conn)
+        .await
+        .expect("failed to select chunked data");
+
+    assert_eq!(rows.len(), 7);
+    assert_eq!(rows[0].2, "This is a ");
+    assert_eq!(rows[1].2, "test strin");
+    assert_eq!(rows[2].2, "g that wil");
+    assert_eq!(rows[3].2, "l be chunk");
+    assert_eq!(rows[4].2, "ed into sm");
+    assert_eq!(rows[5].2, "aller piec");
+    assert_eq!(rows[6].2, "es.");
 }
